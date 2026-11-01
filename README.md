@@ -1,8 +1,8 @@
 # Engine Studio beta
 
-[Download Engine Studio beta 246 for Windows x64](https://github.com/mike9812121298/pwclab-engine-studio-downloads/releases/tag/beta-1.0.53-test.246)
+[Download Engine Studio beta 253 for Windows x64](https://github.com/mike9812121298/pwclab-engine-studio-downloads/releases/tag/beta-1.0.53-test.253)
 
-Open the download page and select **Engine-Studio-Beta-246-Windows-x64.exe** under Assets. The signed Windows publisher is **GT40MARINE**. Version: **1.0.53-test.246**.
+Open the download page and select **Engine-Studio-Beta-253-Windows-x64.exe** under Assets. The signed Windows publisher is **GT40MARINE**. Version: **1.0.53-test.253**.
 
 Ask Mike for an invitation code. Each invitation activates one PC. The **72-hour trial starts at successful activation**, so downloading does not start the timer. Mike can extend a tester's trial.
 
