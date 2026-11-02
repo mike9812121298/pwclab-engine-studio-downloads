@@ -86,12 +86,18 @@ try {
   if($url.Scheme -cne 'https' -or $url.Host -cne 'github.com' -or $url.AbsolutePath -notmatch '^/mike9812121298/pwclab-engine-studio-downloads/releases/download/beta-1\.0\.53-test\.[0-9]+/Engine-Studio-Beta-[0-9]+-Windows-x64\.exe$' -or $url.Query -or $sha -cnotmatch '^[a-f0-9]{64}$'){throw 'qa_installer_input_invalid'}
   $activate=$env:STUDIO_QA_ACTIVATE -ceq 'true';$invitation=$env:STUDIO_QA_INVITATION
   $env:STUDIO_QA_INVITATION=$null
-  if($activate){if($invitation -cnotmatch '^ESI1-[A-Za-z0-9_-]{43}$'){throw 'qa_one_time_invitation_missing'};Write-Output ('::add-mask::'+$invitation)}
+  if($activate){if($invitation -cnotmatch '^ESI1-[A-Za-z0-9_-]{43}$'){throw 'qa_one_time_invitation_missing'};Write-Output ('::add-mask::'+$invitation);$result.invitationHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($invitation))).ToLowerInvariant()}
   $trialKey=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\PWC LAB\Engine Studio\Protected Beta v1',$false)
   if($trialKey){$trialKey.Close();throw 'qa_environment_not_clean'}
   $installed=Join-Path $env:LOCALAPPDATA 'Programs\PWC LAB Engine Studio Full Program Bench\PWC LAB Engine Studio Full Program Bench.exe'
   if(Test-Path -LiteralPath $installed){throw 'qa_environment_not_clean'}
   $result.cleanInitialRegistry=$true;$result.cleanInitialInstall=$true
+  # Read the existing natural machine identity exactly as the client does; never rotate it.
+  # A clean VM profile can still clone an identity the server has already seen.
+  $machineRoot=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,[Microsoft.Win32.RegistryView]::Registry64)
+  try{$machineKey=$machineRoot.OpenSubKey('SOFTWARE\Microsoft\Cryptography',$false);try{$machineGuid=$machineKey.GetValue('MachineGuid')}finally{$machineKey.Close()}}finally{$machineRoot.Close()}
+  $result.deviceSha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes('studio-protected-beta-20261031:'+$machineGuid))).ToLowerInvariant()
+  $machineGuid=$null
   $installer=Join-Path $env:RUNNER_TEMP 'Engine-Studio-reviewed-installer.exe'
   if($env:STUDIO_QA_DOWNLOAD_DRAFT -ceq 'true'){
     # Same-repository read token only; no PAT, owner credential or expanded permission.
@@ -166,6 +172,7 @@ try {
 }catch{
   # Deliberately no full UI tree, screenshot, exception arguments, private envelope or code.
   $result.status='failed';$message=$_.Exception.Message;$result.failureCode=if($message -cmatch '^qa_[a-z0-9_]+$'){$message}else{'qa_unexpected_runtime_failure'}
+  try{$failureActivation=Window 'Activate Engine Studio';$result.activationWindowStillVisible=[bool]$failureActivation;if($failureActivation){$result.knownAuthorizationDeniedMessageSeen=[bool](Named $failureActivation 'This activation or operation was not authorized. Check the invitation code or contact GT40 Marine for help.')}}catch{}
   if($result.Contains('firstTrial')){try{$result.trialAfterFailure=Read-Trial}catch{}}
   # Only known event names/timestamps leave the guest; never arbitrary detail or UI text.
   $eventNames=@('application-started','document-loaded','document-load-failed','renderer-stopped','renderer-reloaded','startup-failed','beta-trial-unavailable')
