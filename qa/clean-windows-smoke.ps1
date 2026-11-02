@@ -96,7 +96,15 @@ try {
   $tagVersion=[regex]::Match($url.AbsolutePath,'/beta-1\.0\.53-test\.([0-9]+)/').Groups[1].Value
   if($result.fileVersion -cne ('1.0.53.'+$tagVersion) -or !$url.AbsolutePath.EndsWith('/Engine-Studio-Beta-'+$tagVersion+'-Windows-x64.exe')){throw 'qa_installed_version_mismatch'}
   $qaProcess=Start-Process -FilePath $installed -PassThru
-  $activation=Wait-Value {Window 'Activate Engine Studio'}
+  # A native window can be visible before Chromium has published its DOM controls.
+  # Wait for the actual heading/input/action, then verify the exact invitation label.
+  $activation=Wait-Value {
+    $candidate=Window 'Activate Engine Studio';if(!$candidate){return $null}
+    $heading=Named $candidate 'Activate Engine Studio beta'
+    $input=$candidate.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Edit))
+    $start=Named $candidate 'Start 72-hour trial'
+    if($heading -and $input -and $start){return $candidate};return $null
+  }
   if(!(Named $activation 'Invitation code from GT40 Marine')){throw 'qa_invitation_label_incorrect'}
   $edit=$activation.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Edit))
   if(!$edit){throw 'qa_invitation_field_missing'}
