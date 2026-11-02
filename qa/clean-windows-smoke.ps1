@@ -14,7 +14,7 @@ public static class StudioQaDesktop {
   [DllImport("user32.dll")] public static extern bool CloseDesktop(IntPtr desktop);
 }
 '@
-$result=[ordered]@{status='started';runId=$env:GITHUB_RUN_ID;runnerOS=(Get-CimInstance Win32_OperatingSystem).Caption;scope='Clean hosted Windows VM, actual signed public installer, ordinary app UI, native CNG/DPAPI and production trial service. No vehicle/interface write, owner key or runtime plaintext export.';vehicleOperations=0}
+$result=[ordered]@{status='started';runId=$env:GITHUB_RUN_ID;runnerOS=(Get-CimInstance Win32_OperatingSystem).Caption;scope='Clean hosted Windows VM, actual signed public installer, ordinary app UI, native CNG/DPAPI and production trial service. No vehicle/interface write, owner key or runtime plaintext export.';vehicleOperations=0;mainObservations=@()}
 $qaProcess=$null
 function Wait-Value([scriptblock]$Read,[int]$Seconds=90){
   $watch=[Diagnostics.Stopwatch]::StartNew()
@@ -53,12 +53,19 @@ function Read-Trial(){
     }finally{[Array]::Clear($raw,0,$raw.Length)}
   }finally{$key.Close()}
 }
-function Observe-Main(){
+function Observe-Main([string]$Stage){
   $main=Wait-Value {Window 'PWC LAB Engine Studio'}
   # Leave startup/discovery alone before a single scoped observation. UIA polling itself
   # can distort the timing being tested; window-title discovery does not read the DOM.
   Start-Sleep -Seconds 40
-  if(!(Visible-OwnedWindow $main)){throw 'qa_expected_visible_main_not_ready'}
+  $visible=Visible-OwnedWindow $main
+  $buttons=$main.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Button))
+  $intro=@($buttons|Where-Object {$_.Current.Name -like 'Skip intro*' -and !$_.Current.IsOffscreen -and $_.Current.BoundingRectangle.Width -gt 0 -and $_.Current.BoundingRectangle.Height -gt 0})
+  $observation=[ordered]@{stage=$Stage;observedAt=[DateTime]::UtcNow.ToString('o');visible=$visible;noVehicleConnected=[bool](Named $main 'NO VEHICLE CONNECTED');linkNotConnected=[bool](Named $main 'Link not connected');ecmNotConnected=[bool](Named $main 'ECM not connected');skipIntroAvailable=($intro.Count -eq 1);introSkipped=$false}
+  $result.mainObservations+=,$observation
+  if(!$visible){throw 'qa_expected_visible_main_not_ready'}
+  # Follow the ordinary first-run journey if the optional intro is actually visible.
+  if($intro.Count -eq 1){Click $intro[0];$observation.introSkipped=$true;Start-Sleep -Seconds 1}
   if(!(Named $main 'NO VEHICLE CONNECTED')){throw 'qa_expected_offline_main_not_ready'}
   $texts=$main.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Text))
   $banner=@($texts|ForEach-Object {$_.Current.Name}|Where-Object {$_ -like 'Beta trial ends * ECU flashing is unavailable in this beta.'})
@@ -120,20 +127,31 @@ try {
     Write-Output ('CLEAN_WINDOWS_QA_PROOF='+($result|ConvertTo-Json -Depth 5 -Compress));exit 0
   }
   $value.SetValue($invitation);Click (Named $activation 'Start 72-hour trial')
-  $main=Observe-Main;$first=Read-Trial
+  $main=Observe-Main 'first-main';$first=Read-Trial
   if([long]$first.expiresAt-[long]$first.startedAt -ne 72*60*60*1000 -or $first.revision -ne 1 -or $first.runtimeGrants -lt 1){throw 'qa_first_trial_or_runtime_invalid'}
   $result.firstTrial=$first;$result.firstMainReached=$true;$result.firstTrialBanner=$main.trialBanner
   Close-Main $main.window
   # Reinstall the exact customer installer without deleting profile, CNG or licensing state.
   $setup=Start-Process -FilePath $installer -ArgumentList @('/S','/CURRENTUSER') -PassThru -Wait
   if($setup.ExitCode -ne 0){throw 'qa_reinstall_failed'}
-  $qaProcess=Start-Process -FilePath $installed -PassThru;$again=Observe-Main;$second=Read-Trial
+  $persisted=Read-Trial;$result.reinstalledTrialBeforeLaunch=$persisted
+  if($first.startedAt -ne $persisted.startedAt -or $first.expiresAt -ne $persisted.expiresAt -or $first.revision -ne $persisted.revision -or $first.ciphertextSha256 -cne $persisted.ciphertextSha256){throw 'qa_reinstall_restarted_or_changed_trial'}
+  $result.reinstallEntitlementPreserved=$true
+  $qaProcess=Start-Process -FilePath $installed -PassThru;$again=Observe-Main 'reinstalled-main';$second=Read-Trial
   if($first.startedAt -ne $second.startedAt -or $first.expiresAt -ne $second.expiresAt -or $first.revision -ne $second.revision -or $first.ciphertextSha256 -cne $second.ciphertextSha256){throw 'qa_reinstall_restarted_or_changed_trial'}
   $result.reinstallPreservedOriginalTrial=$true;$result.secondTrial=$second;Close-Main $again.window
   $result.status='passed';$result.trialActivationExecuted=$true;$result.finishedAt=[DateTime]::UtcNow.ToString('o')
 }catch{
   # Deliberately no full UI tree, screenshot, exception arguments, private envelope or code.
   $result.status='failed';$message=$_.Exception.Message;$result.failureCode=if($message -cmatch '^qa_[a-z0-9_]+$'){$message}else{'qa_unexpected_runtime_failure'}
+  if($result.Contains('firstTrial')){try{$result.trialAfterFailure=Read-Trial}catch{}}
+  # Only known event names/timestamps leave the guest; never arbitrary detail or UI text.
+  $eventNames=@('application-started','document-loaded','document-load-failed','renderer-stopped','renderer-reloaded','startup-failed','beta-trial-unavailable')
+  $result.startupEvents=@()
+  foreach($relative in @('PWC LAB Engine Studio Full Program Bench\logs\pwclab-engine-studio.log','@pwclab\ecm-workstation\logs\pwclab-engine-studio.log','PWC LAB Engine Studio\logs\pwclab-engine-studio.log')){
+    $logPath=Join-Path $env:APPDATA $relative
+    if(Test-Path -LiteralPath $logPath){foreach($line in Get-Content -LiteralPath $logPath -Tail 80){try{$entry=$line|ConvertFrom-Json;if($entry.event -cin $eventNames){$result.startupEvents+=@{at=$entry.at;event=$entry.event}}}catch{}}}
+  }
   $result.finishedAt=[DateTime]::UtcNow.ToString('o')
 }
 Write-Output ('CLEAN_WINDOWS_QA_PROOF='+($result|ConvertTo-Json -Depth 5 -Compress))
