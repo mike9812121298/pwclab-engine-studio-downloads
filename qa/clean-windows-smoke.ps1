@@ -85,6 +85,7 @@ try {
   $url=[uri]$env:STUDIO_INSTALLER_URL;$sha=$env:STUDIO_INSTALLER_SHA256
   if($url.Scheme -cne 'https' -or $url.Host -cne 'github.com' -or $url.AbsolutePath -notmatch '^/mike9812121298/pwclab-engine-studio-downloads/releases/download/beta-1\.0\.53-test\.[0-9]+/Engine-Studio-Beta-[0-9]+-Windows-x64\.exe$' -or $url.Query -or $sha -cnotmatch '^[a-f0-9]{64}$'){throw 'qa_installer_input_invalid'}
   $activate=$env:STUDIO_QA_ACTIVATE -ceq 'true';$invitation=$env:STUDIO_QA_INVITATION
+  $env:STUDIO_QA_INVITATION=$null
   if($activate){if($invitation -cnotmatch '^ESI1-[A-Za-z0-9_-]{43}$'){throw 'qa_one_time_invitation_missing'};Write-Output ('::add-mask::'+$invitation)}
   $trialKey=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\PWC LAB\Engine Studio\Protected Beta v1',$false)
   if($trialKey){$trialKey.Close();throw 'qa_environment_not_clean'}
@@ -92,7 +93,28 @@ try {
   if(Test-Path -LiteralPath $installed){throw 'qa_environment_not_clean'}
   $result.cleanInitialRegistry=$true;$result.cleanInitialInstall=$true
   $installer=Join-Path $env:RUNNER_TEMP 'Engine-Studio-reviewed-installer.exe'
-  Invoke-WebRequest -Uri $url -OutFile $installer
+  if($env:STUDIO_QA_DOWNLOAD_DRAFT -ceq 'true'){
+    # Same-repository read token only; no PAT, owner credential or expanded permission.
+    # Clear it before starting the installer/app so child processes cannot inherit it.
+    $tag=([regex]::Match($url.AbsolutePath,'/download/([^/]+)/')).Groups[1].Value
+    $assetName=$url.Segments[-1];$slug='mike9812121298/pwclab-engine-studio-downloads'
+    if(!$env:STUDIO_QA_REPO_TOKEN){throw 'qa_private_draft_read_token_missing'}
+    $releaseId=$env:STUDIO_QA_DRAFT_RELEASE_ID
+    if($releaseId -cnotmatch '^[1-9][0-9]{0,17}$'){throw 'qa_private_draft_release_id_invalid'}
+    try{
+      $readToken=$env:STUDIO_QA_REPO_TOKEN;$env:STUDIO_QA_REPO_TOKEN=$null
+      $headers=@{Authorization='Bearer '+$readToken;Accept='application/vnd.github+json'}
+      try{$metadata=Invoke-RestMethod -Uri ('https://api.github.com/repos/'+$slug+'/releases/'+$releaseId) -Headers $headers}catch{throw 'qa_private_draft_unavailable_with_read_token'}
+      $assets=@($metadata.assets|Where-Object {$_.name -ceq $assetName -and $_.state -ceq 'uploaded' -and $_.digest -ceq ('sha256:'+$sha)})
+      if(!$metadata.draft -or [string]$metadata.id -cne $releaseId -or $metadata.tag_name -cne $tag -or $assets.Count -ne 1 -or [string]$assets[0].id -cnotmatch '^[1-9][0-9]{0,17}$'){throw 'qa_private_draft_asset_binding_invalid'}
+      $headers.Accept='application/octet-stream'
+      try{Invoke-WebRequest -Uri ('https://api.github.com/repos/'+$slug+'/releases/assets/'+$assets[0].id) -Headers $headers -OutFile $installer}catch{throw 'qa_private_draft_download_failed'}
+      $result.downloadMode='private-candidate-draft'
+    }finally{$readToken=$null;$headers=$null;$env:STUDIO_QA_REPO_TOKEN=$null}
+  }else{
+    $env:STUDIO_QA_REPO_TOKEN=$null
+    Invoke-WebRequest -Uri $url -OutFile $installer;$result.downloadMode='public-release'
+  }
   if((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sha){throw 'qa_public_installer_hash_mismatch'}
   $signature=Get-AuthenticodeSignature -LiteralPath $installer
   if($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -cne 'CN=GT40MARINE, O=GT40MARINE, L=BONNEY LAKE, S=Washington, C=US' -or !$signature.TimeStamperCertificate){throw 'qa_public_installer_signature_invalid'}
