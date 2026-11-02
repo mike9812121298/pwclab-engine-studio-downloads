@@ -1,0 +1,39 @@
+name: Clean Windows installer and activation smoke
+on:
+  workflow_dispatch:
+    inputs:
+      installer_url:
+        description: Exact public signed Windows installer URL
+        required: true
+        type: string
+      installer_sha256:
+        description: Reviewed installer SHA-256
+        required: true
+        type: string
+      activate_trial:
+        description: Use the disposable QA invitation to test first activation and reinstall
+        required: true
+        default: false
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: engine-studio-clean-windows-smoke
+  cancel-in-progress: false
+jobs:
+  clean-windows:
+    if: github.actor == 'mike9812121298'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Test the signed public installer on a clean Windows VM
+        shell: pwsh
+        env:
+          STUDIO_INSTALLER_URL: ${{ inputs.installer_url }}
+          STUDIO_INSTALLER_SHA256: ${{ inputs.installer_sha256 }}
+          STUDIO_QA_INVITATION: ${{ secrets.STUDIO_QA_INVITATION_20261102 }}
+          STUDIO_QA_ACTIVATE: ${{ inputs.activate_trial }}
+        run: ./qa/clean-windows-smoke.ps1
