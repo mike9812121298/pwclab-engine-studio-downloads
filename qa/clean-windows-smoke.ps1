@@ -55,15 +55,24 @@ function Read-Trial(){
 }
 function Observe-Main([string]$Stage){
   $main=Wait-Value {Window 'PWC LAB Engine Studio'}
-  # Leave startup/discovery alone before a single scoped observation. UIA polling itself
+  # Allow startup and discovery to settle before observing the workspace. UIA polling itself
   # can distort the timing being tested; window-title discovery does not read the DOM.
   Start-Sleep -Seconds 40
+  $probeCount=0
+  $offlineStateReady=$false
+  do {
+    $probeCount++
+    # A visible native shell can precede accessibility attachment to the new renderer.
+    $main=Window 'PWC LAB Engine Studio'
+    $offlineStateReady=$main -and [bool](Named $main 'NO VEHICLE CONNECTED')
+    if(!$offlineStateReady -and $probeCount -lt 4){Start-Sleep -Seconds 10}
+  } while(!$offlineStateReady -and $probeCount -lt 4)
   $visible=Visible-OwnedWindow $main
+  if(!$visible){throw 'qa_expected_visible_main_not_ready'}
   $buttons=$main.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Button))
   $intro=@($buttons|Where-Object {$_.Current.Name -like 'Skip intro*' -and !$_.Current.IsOffscreen -and $_.Current.BoundingRectangle.Width -gt 0 -and $_.Current.BoundingRectangle.Height -gt 0})
-  $observation=[ordered]@{stage=$Stage;observedAt=[DateTime]::UtcNow.ToString('o');visible=$visible;noVehicleConnected=[bool](Named $main 'NO VEHICLE CONNECTED');linkNotConnected=[bool](Named $main 'Link not connected');ecmNotConnected=[bool](Named $main 'ECM not connected');skipIntroAvailable=($intro.Count -eq 1);introSkipped=$false}
+  $observation=[ordered]@{stage=$Stage;observedAt=[DateTime]::UtcNow.ToString('o');visible=$visible;noVehicleConnected=[bool](Named $main 'NO VEHICLE CONNECTED');linkNotConnected=[bool](Named $main 'Link not connected');ecmNotConnected=[bool](Named $main 'ECM not connected');skipIntroAvailable=($intro.Count -eq 1);introSkipped=$false;offlineProbes=$probeCount}
   $result.mainObservations+=,$observation
-  if(!$visible){throw 'qa_expected_visible_main_not_ready'}
   # Follow the ordinary first-run journey if the optional intro is actually visible.
   if($intro.Count -eq 1){Click $intro[0];$observation.introSkipped=$true;Start-Sleep -Seconds 1}
   if(!(Named $main 'NO VEHICLE CONNECTED')){throw 'qa_expected_offline_main_not_ready'}
