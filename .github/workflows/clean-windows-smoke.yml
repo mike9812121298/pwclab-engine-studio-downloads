@@ -38,7 +38,7 @@ concurrency:
 jobs:
   clean-windows:
     if: github.actor == 'mike9812121298'
-    runs-on: ${{ inputs.upgrade_from_258 && 'windows-2025' || 'windows-2025-vs2026' }}
+    runs-on: ${{ inputs.upgrade_from_258 && 'windows-11-vs2026-arm' || 'windows-2025-vs2026' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
