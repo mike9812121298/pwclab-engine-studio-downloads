@@ -15,6 +15,11 @@ on:
         required: true
         default: false
         type: boolean
+      upgrade_from_258:
+        description: Activate accepted build 258 and manually upgrade to the exact candidate
+        required: true
+        default: false
+        type: boolean
       download_draft:
         description: Read the candidate draft with a short-lived asset URL or the job's read token
         required: true
@@ -33,7 +38,7 @@ concurrency:
 jobs:
   clean-windows:
     if: github.actor == 'mike9812121298'
-    runs-on: windows-2025-vs2026
+    runs-on: ${{ inputs.upgrade_from_258 && 'windows-2025' || 'windows-2025-vs2026' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -46,6 +51,7 @@ jobs:
           STUDIO_INSTALLER_SHA256: ${{ inputs.installer_sha256 }}
           STUDIO_QA_INVITATION: ${{ secrets.STUDIO_QA_INVITATION_20261102 }}
           STUDIO_QA_ACTIVATE: ${{ inputs.activate_trial }}
+          STUDIO_QA_UPGRADE_FROM_258: ${{ inputs.upgrade_from_258 }}
           STUDIO_QA_DOWNLOAD_DRAFT: ${{ inputs.download_draft }}
           STUDIO_QA_DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
           STUDIO_QA_REPO_TOKEN: ${{ github.token }}

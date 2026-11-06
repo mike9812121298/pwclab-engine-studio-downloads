@@ -146,11 +146,24 @@ try {
   $signature=Get-AuthenticodeSignature -LiteralPath $installer
   if($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -cne 'CN=GT40MARINE, O=GT40MARINE, L=BONNEY LAKE, S=Washington, C=US' -or !$signature.TimeStamperCertificate){throw 'qa_public_installer_signature_invalid'}
   $result.installerSha256=$sha;$result.signature='Valid GT40MARINE, timestamped'
-  $setup=Start-Process -FilePath $installer -ArgumentList @('/S','/CURRENTUSER') -PassThru -Wait
+  $upgrade=$env:STUDIO_QA_UPGRADE_FROM_258 -ceq 'true'
+  $firstInstaller=$installer
+  $firstBuild=[regex]::Match($url.AbsolutePath,'/beta-1\.0\.53-test\.([0-9]+)/').Groups[1].Value
+  if($upgrade){
+    if(!$activate -or [int]$firstBuild -le 258){throw 'qa_upgrade_requires_activation_and_successor'}
+    $firstBuild='258'
+    $firstInstaller=Join-Path $env:RUNNER_TEMP 'Engine-Studio-accepted-258.exe'
+    Invoke-WebRequest -Uri 'https://github.com/mike9812121298/pwclab-engine-studio-downloads/releases/download/beta-1.0.53-test.258/Engine-Studio-Beta-258-Windows-x64.exe' -OutFile $firstInstaller
+    if((Get-FileHash -LiteralPath $firstInstaller -Algorithm SHA256).Hash.ToLowerInvariant() -cne '85789d3a31455c1f75f66a65a5800451b063b788589764b9e3160a26931a99b6'){throw 'qa_upgrade_baseline_hash_invalid'}
+    $baselineSignature=Get-AuthenticodeSignature -LiteralPath $firstInstaller
+    if($baselineSignature.Status -ne 'Valid' -or $baselineSignature.SignerCertificate.Subject -cne $signature.SignerCertificate.Subject -or !$baselineSignature.TimeStamperCertificate){throw 'qa_upgrade_baseline_signature_invalid'}
+  }
+  $setup=Start-Process -FilePath $firstInstaller -ArgumentList @('/S','/CURRENTUSER') -PassThru -Wait
   if($setup.ExitCode -ne 0 -or !(Test-Path -LiteralPath $installed)){throw 'qa_install_failed'}
-  $result.fileVersion=(Get-Item -LiteralPath $installed).VersionInfo.FileVersion
+  $result.firstFileVersion=(Get-Item -LiteralPath $installed).VersionInfo.FileVersion
+  $result.fileVersion=$result.firstFileVersion
   $tagVersion=[regex]::Match($url.AbsolutePath,'/beta-1\.0\.53-test\.([0-9]+)/').Groups[1].Value
-  if($result.fileVersion -cne ('1.0.53.'+$tagVersion) -or !$url.AbsolutePath.EndsWith('/Engine-Studio-Beta-'+$tagVersion+'-Windows-x64.exe')){throw 'qa_installed_version_mismatch'}
+  if($result.fileVersion -cne ('1.0.53.'+$firstBuild) -or !$url.AbsolutePath.EndsWith('/Engine-Studio-Beta-'+$tagVersion+'-Windows-x64.exe')){throw 'qa_installed_version_mismatch'}
   $qaProcess=Start-Process -FilePath $installed -PassThru
   # A native window can be visible before Chromium has published its DOM controls.
   # Wait for the actual heading/input/action, then verify the exact invitation label.
@@ -183,15 +196,40 @@ try {
   if([long]$first.expiresAt-[long]$first.startedAt -ne 72*60*60*1000 -or $first.revision -ne 1 -or $first.runtimeGrants -lt 1){throw 'qa_first_trial_or_runtime_invalid'}
   $result.firstTrial=$first;$result.firstMainReached=$true;$result.firstTrialBanner=$main.trialBanner
   Close-Main $main.window
-  # Reinstall the exact customer installer without deleting profile, CNG or licensing state.
+  # Exercise the ordinary installer without deleting profile, CNG or licensing state.
+  if($upgrade){
+    # A synthetic legacy-format note and embedded attachment exercise real old-file readback.
+    $projectPath=Join-Path $env:APPDATA 'PWC LAB Engine Studio Full Program Bench\workbench\project.json'
+    if(Test-Path -LiteralPath $projectPath){throw 'qa_upgrade_fixture_target_not_empty'}
+    $noteTitle='QA saved note before upgrade'
+    $project=@{version=1;profile=@{name='QA profile';manufacturer='';year='';engine=''};notes=@(@{id='qa-legacy-note';title=$noteTitle;body='Synthetic QA data';type='Inspection';status='Saved';attachment=@{name='qa.txt';data='data:text/plain;base64,UUEgYXR0YWNobWVudA=='}});comparisons=@()}
+    [void](New-Item -ItemType Directory -Path (Split-Path -Parent $projectPath) -Force)
+    $project|ConvertTo-Json -Depth 6 -Compress|Set-Content -LiteralPath $projectPath -Encoding utf8NoBOM
+    $projectHash=(Get-FileHash -LiteralPath $projectPath).Hash
+  }
   $setup=Start-Process -FilePath $installer -ArgumentList @('/S','/CURRENTUSER') -PassThru -Wait
   if($setup.ExitCode -ne 0){throw 'qa_reinstall_failed'}
+  $result.fileVersion=(Get-Item -LiteralPath $installed).VersionInfo.FileVersion
+  if($result.fileVersion -cne ('1.0.53.'+$tagVersion)){throw 'qa_reinstalled_version_mismatch'}
+  if($upgrade -and (Get-FileHash -LiteralPath $projectPath).Hash -cne $projectHash){throw 'qa_upgrade_profile_bytes_changed'}
   $persisted=Read-Trial;$result.reinstalledTrialBeforeLaunch=$persisted
   if($first.startedAt -ne $persisted.startedAt -or $first.expiresAt -ne $persisted.expiresAt -or $first.revision -ne $persisted.revision -or $first.ciphertextSha256 -cne $persisted.ciphertextSha256){throw 'qa_reinstall_restarted_or_changed_trial'}
   $result.reinstallEntitlementPreserved=$true
   $qaProcess=Start-Process -FilePath $installed -PassThru;$again=Observe-Main 'reinstalled-main';$second=Read-Trial
   if($first.startedAt -ne $second.startedAt -or $first.expiresAt -ne $second.expiresAt -or $first.revision -ne $second.revision -or $first.ciphertextSha256 -cne $second.ciphertextSha256){throw 'qa_reinstall_restarted_or_changed_trial'}
-  $result.reinstallPreservedOriginalTrial=$true;$result.secondTrial=$second;Close-Main $again.window
+  $result.reinstallPreservedOriginalTrial=$true;$result.secondTrial=$second
+  if($upgrade){
+    $workLog=Wait-Value {
+      $buttons=$again.window.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Button))
+      $buttons|Where-Object {$_.Current.Name -match '^(?:\d+\s+)?Work Log$' -and !$_.Current.IsOffscreen}|Select-Object -First 1
+    } 20
+    Click $workLog
+    $entry=Wait-Value {Named $again.window $noteTitle} 30
+    if(!$entry -or !(Named $again.window 'qa.txt')){throw 'qa_upgrade_saved_entry_missing'}
+    if((Get-FileHash -LiteralPath $projectPath).Hash -cne $projectHash){throw 'qa_upgrade_profile_bytes_changed'}
+    $result.upgrade=@{baseline=258;candidate=[int]$tagVersion;oldProfileBytesPreserved=$true;legacyEntryAndAttachmentVisible=$true;trialExpiryPreserved=$true}
+  }
+  Close-Main $again.window
   $result.status='passed';$result.trialActivationExecuted=$true;$result.finishedAt=[DateTime]::UtcNow.ToString('o')
 }catch{
   # Deliberately no full UI tree, screenshot, exception arguments, private envelope or code.
