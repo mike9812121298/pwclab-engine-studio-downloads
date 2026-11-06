@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       installer_url:
-        description: Exact public signed Windows installer URL
+        description: Exact signed Windows installer URL
         required: true
         type: string
       installer_sha256:
@@ -16,7 +16,7 @@ on:
         default: false
         type: boolean
       download_draft:
-        description: Read a private candidate draft with this job's repository-read token
+        description: Read the candidate draft with a short-lived asset URL or the job's read token
         required: true
         default: false
         type: boolean
@@ -39,7 +39,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: Test the signed public installer on a clean Windows VM
+      - name: Test the signed installer on a clean Windows VM
         shell: pwsh
         env:
           STUDIO_INSTALLER_URL: ${{ inputs.installer_url }}
@@ -49,4 +49,5 @@ jobs:
           STUDIO_QA_DOWNLOAD_DRAFT: ${{ inputs.download_draft }}
           STUDIO_QA_DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
           STUDIO_QA_REPO_TOKEN: ${{ github.token }}
+          STUDIO_QA_DRAFT_ASSET: ${{ secrets.STUDIO_QA_DRAFT_ASSET }}
         run: ./qa/clean-windows-smoke.ps1

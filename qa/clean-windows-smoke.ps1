@@ -14,7 +14,7 @@ public static class StudioQaDesktop {
   [DllImport("user32.dll")] public static extern bool CloseDesktop(IntPtr desktop);
 }
 '@
-$result=[ordered]@{status='started';runId=$env:GITHUB_RUN_ID;runnerOS=(Get-CimInstance Win32_OperatingSystem).Caption;scope='Clean hosted Windows VM, actual signed public installer, ordinary app UI, native CNG/DPAPI and production trial service. No vehicle/interface write, owner key or runtime plaintext export.';vehicleOperations=0;mainObservations=@()}
+$result=[ordered]@{status='started';runId=$env:GITHUB_RUN_ID;runnerOS=(Get-CimInstance Win32_OperatingSystem).Caption;scope='Clean hosted Windows VM, actual signed installer, ordinary app UI, native CNG/DPAPI and production trial service. No vehicle/interface write, owner key or runtime plaintext export.';vehicleOperations=0;mainObservations=@()}
 $qaProcess=$null
 function Wait-Value([scriptblock]$Read,[int]$Seconds=90){
   $watch=[Diagnostics.Stopwatch]::StartNew()
@@ -99,7 +99,19 @@ try {
   $result.deviceSha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes('studio-protected-beta-20261031:'+$machineGuid))).ToLowerInvariant()
   $machineGuid=$null
   $installer=Join-Path $env:RUNNER_TEMP 'Engine-Studio-reviewed-installer.exe'
-  if($env:STUDIO_QA_DOWNLOAD_DRAFT -ceq 'true'){
+  $draftAsset=$env:STUDIO_QA_DRAFT_ASSET
+  $env:STUDIO_QA_DRAFT_ASSET=$null
+  if($env:STUDIO_QA_DOWNLOAD_DRAFT -ceq 'true' -and $draftAsset){
+    # A short-lived URL for this single draft asset avoids exporting a GitHub credential.
+    $env:STUDIO_QA_REPO_TOKEN=$null
+    try {
+      $assetUrl=[uri]$draftAsset
+      if($assetUrl.Scheme -cne 'https' -or $assetUrl.Host -cne 'release-assets.githubusercontent.com' -or $assetUrl.UserInfo -or !$assetUrl.Query){throw 'qa_private_draft_asset_url_invalid'}
+      Invoke-WebRequest -Uri $assetUrl -MaximumRedirection 0 -OutFile $installer
+      $result.downloadMode='private-candidate-draft-signed-url'
+    } catch { throw 'qa_private_draft_signed_download_failed' }
+    finally { $draftAsset=$null; $assetUrl=$null }
+  }elseif($env:STUDIO_QA_DOWNLOAD_DRAFT -ceq 'true'){
     # Same-repository read token only; no PAT, owner credential or expanded permission.
     # Clear it before starting the installer/app so child processes cannot inherit it.
     $tag=([regex]::Match($url.AbsolutePath,'/download/([^/]+)/')).Groups[1].Value
@@ -135,7 +147,8 @@ try {
   # Wait for the actual heading/input/action, then verify the exact invitation label.
   $activation=Wait-Value {
     $candidate=Window 'Activate Engine Studio';if(!$candidate){return $null}
-    $heading=Named $candidate 'Activate Engine Studio beta'
+    $heading=Named $candidate 'Activate Engine Studio'
+    if(!$heading){$heading=Named $candidate 'Activate Engine Studio beta'}
     $input=$candidate.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Edit))
     $start=Named $candidate 'Start 72-hour trial'
     if($heading -and $input -and $start){return $candidate};return $null
@@ -146,7 +159,9 @@ try {
   $value=$edit.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
   $value.SetValue('qa@example.invalid');Click (Named $activation 'Start 72-hour trial');Start-Sleep -Seconds 1
   $text=@($activation.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)|ForEach-Object {$_.Current.Name}) -join ' '
-  if(!$text.Contains('Paste an invitation code starting with ESI1-. Your email address cannot be used here.') -or !(Window 'Activate Engine Studio')){throw 'qa_local_email_guidance_missing'}
+  $oldGuidance=$text.Contains('Paste an invitation code starting with ESI1-. Your email address cannot be used here.')
+  $currentGuidance=$text.Contains('Paste your GT40 Marine invitation code (ESI1- for a trial or ESO1- for an owner). Your email address cannot be used here.')
+  if(!($oldGuidance -or $currentGuidance) -or !(Window 'Activate Engine Studio')){throw 'qa_local_email_guidance_missing'}
   $result.emailGuidanceObserved=$true;$result.visibleActivationWindow=$true
   if(!$activate){
     $activation.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern).Close()
@@ -175,7 +190,7 @@ try {
   try{$failureActivation=Window 'Activate Engine Studio';$result.activationWindowStillVisible=[bool]$failureActivation;if($failureActivation){$result.knownAuthorizationDeniedMessageSeen=[bool](Named $failureActivation 'This activation or operation was not authorized. Check the invitation code or contact GT40 Marine for help.')}}catch{}
   if($result.Contains('firstTrial')){try{$result.trialAfterFailure=Read-Trial}catch{}}
   # Only known event names/timestamps leave the guest; never arbitrary detail or UI text.
-  $eventNames=@('application-started','document-loaded','document-load-failed','renderer-stopped','renderer-reloaded','startup-failed','beta-trial-unavailable')
+  $eventNames=@('application-started','document-loaded','document-load-failed','renderer-stopped','renderer-reloaded','startup-failed','protected-startup-failed','beta-trial-unavailable')
   $result.startupEvents=@()
   foreach($relative in @('PWC LAB Engine Studio Full Program Bench\logs\pwclab-engine-studio.log','@pwclab\ecm-workstation\logs\pwclab-engine-studio.log','PWC LAB Engine Studio\logs\pwclab-engine-studio.log')){
     $logPath=Join-Path $env:APPDATA $relative
